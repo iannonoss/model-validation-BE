@@ -1,0 +1,4 @@
+venv/  #  l'ambiente virtuale
+__pycache__/  #  cache di Python
+*.pyc  #  file compilati Python
+*.pyo  #  file temporanei Python

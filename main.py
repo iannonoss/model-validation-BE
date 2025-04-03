@@ -12,13 +12,19 @@ from sklearn.base import clone
 import pandas as pd
 import numpy as np
 import os
+from dotenv import load_dotenv
 import logging
 import traceback
 import io
 import base64
 import matplotlib.pyplot as plt
 import math
+import json
+import re
+import google.generativeai as genai
 
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -39,6 +45,7 @@ if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR, mode=0o777, exist_ok=True)
     os.chmod(UPLOAD_DIR, 0o777)
 
+
 # Schemi di richiesta
 class PreprocessRequest(BaseModel):
     target: str
@@ -47,14 +54,17 @@ class PreprocessRequest(BaseModel):
     random_state: int = 0
     split_type: str = "train_test"
 
+
 class TransformRequest(BaseModel):
     pass
+
 
 # Variabili globali (per prototipazione)
 global_df = None
 X_train, X_test, y_train, y_test = None, None, None, None
 categorical_cols, numerical_cols = [], []
 scaler = None
+
 
 # Funzione di pulizia per la serializzazione JSON
 def clean_for_json(obj):
@@ -69,6 +79,7 @@ def clean_for_json(obj):
             return obj
     else:
         return obj
+
 
 @app.post("/upload_csv")
 async def upload_csv(file: UploadFile = File(...)):
@@ -99,6 +110,53 @@ async def upload_csv(file: UploadFile = File(...)):
     except Exception as e:
         logging.error("Errore nel caricamento del CSV: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def suggest_features_from_csv(df: pd.DataFrame) -> str:
+    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
+    model = genai.GenerativeModel("gemini-1.5-flash")
+
+    preview = df.head(20).to_csv(index=False)
+
+    prompt = f"""
+    Ti fornisco le prime 20 righe di un dataset in formato CSV. 
+    Il tuo compito è suggerire:
+    1. Quale colonna usare come target (obiettivo) per un modello di classificazione.
+    2. Quali colonne usare come variabili indipendenti.
+    3. Indica se ci sono colonne da escludere e perché.
+
+    Dataset:
+    {preview}
+
+    Rispondi in formato JSON con le seguenti chiavi:
+    {{
+        "target": "...",
+        "independent_features": ["...", "..."],
+        "excluded_columns": ["..."],
+        "motivation": "..."
+    }}
+    """
+
+    response = model.generate_content(prompt)
+    return response.text
+
+
+@app.get("/suggest_features")
+async def suggest_features():
+    global global_df
+    if global_df is None:
+        raise HTTPException(status_code=400, detail="Nessun dataset caricato.")
+
+    try:
+        suggestion = suggest_features_from_csv(global_df)
+        cleaned_text = re.sub(r"```json|```", "", suggestion).strip()
+        suggestion_dict = json.loads(cleaned_text)
+        return {"suggestion": suggestion_dict}
+    except Exception as e:
+        logging.error("Errore in suggest_features: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/preprocess_data")
 async def preprocess_data(request: PreprocessRequest):
@@ -139,6 +197,7 @@ async def preprocess_data(request: PreprocessRequest):
     except Exception as e:
         logging.error("Errore in preprocess_data: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/transform_data")
 async def transform_data(_: TransformRequest):
@@ -190,6 +249,7 @@ async def transform_data(_: TransformRequest):
     except Exception as e:
         logging.error("Errore in transform_data: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # Funzione per creare scatter plot in 2D (dati già ridotti)
 def create_scatter_plot_2d(X_2d, y, clf, title):
@@ -247,6 +307,7 @@ def create_plot(X_orig, y, clf, title):
 
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+
 
 @app.get("/predict")
 async def predict_test_data(model_selected: str):
@@ -313,4 +374,3 @@ async def predict_test_data(model_selected: str):
     except Exception as e:
         logging.error("Errore in predict_test_data: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
-
